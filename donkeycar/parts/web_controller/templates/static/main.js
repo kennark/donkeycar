@@ -188,6 +188,25 @@ var driveHandler = new function() {
         state.buttons[$(this).attr('id')] = false;
         postDrive(["buttons"]); // write it back to the server
       });
+
+      $('#dest_send').click(function() {
+        const lat = $('#dest-lat').val();
+        const lon = $('#dest-lon').val();
+
+        $.ajax({
+          url: '/dest',
+          method: 'POST',
+          contentType: 'application/json',
+          data: JSON.stringify({ lat, lon }),
+          success: function() {
+            $('#dest_result').text('Success!')
+          },
+          error: function(err) {
+            console.error('Submission error:', err);
+            $('#dest_result').text(err.responseJSON.error)
+          }
+        });
+      });
     };
 
 

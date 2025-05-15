@@ -38,6 +38,29 @@ class GpsNmeaPositions:
     def run_threaded(self, lines):
         return self.run(lines)
 
+class GpsNmeaHeadingAndSpeed:
+    """
+    Part to convert array of NMEA sentences into heading direction (degrees) and driving speed (km/h)
+    """
+    def __init__(self, debug=False):
+        self.debug = debug
+
+    def run(self, lines):
+        data = []
+        if lines:
+            for ts, nmea in lines:
+                direction_speed = parse_gps_direction_and_speed(nmea, self.debug)
+                if direction_speed:
+                    # output (ts, heading, speed)
+                    data.append((ts, direction_speed[0], direction_speed[1]))
+        return data
+
+    def update(self):
+        pass
+
+    def run_threaded(self, lines):
+        return self.run(lines)
+
 class GpsLatestPosition:
     """
     Return most recent valid GPS position
@@ -50,6 +73,19 @@ class GpsLatestPosition:
         if positions is not None and len(positions) > 0:
             self.position = positions[-1]
         return self.position
+
+class GpsLatestHeadingAndSpeed:
+    """
+    Return the most recent GPS heading, and speed
+    """
+    def __init__(self, debug=False):
+        self.debug = debug
+        self.heading = None
+
+    def run(self, headings):
+        if headings is not None and len(headings) > 0:
+            self.heading = headings[-1]
+        return self.heading
 
 class GpsPosition:
     """
@@ -265,6 +301,70 @@ def parseGpsPosition(line, debug=False):
         # print(f"Ignoring line {line}")
         pass
     return None
+
+def parse_gps_direction_and_speed(line, debug=False):
+    """
+    Given a line emitted by GPS module,
+    parse out the direction and speed and return as a tuple (360 degrees, 0 km/h)
+
+    If it cannot be parsed, is not a heading message, or heading is not yet calibrated, then return (None, None).
+    """
+    if not line:
+        return None
+    line = line.strip()
+    if not line:
+        return None
+
+    #
+    # must start with $ and end with checksum
+    #
+    if '$' != line[0]:
+        logger.info("NMEA Missing line start")
+        return None
+
+    if '*' != line[-3]:
+        logger.info("NMEA Missing checksum")
+        return None
+
+    nmea_checksum = parse_nmea_checksum(line) # ## checksum hex digits as int
+    nmea_msg = line[1:-3]      # msg without $ and *## checksum
+    nmea_parts = nmea_msg.split(",")
+    message = nmea_parts[0]
+
+    if (message == "GPVTG") or (message == "GNVTG"):
+        #
+        # GNVTG = Course over Ground and Ground Speed
+        # Message format
+        # $GNVTG,,T,,M,0.054,N,0.100,K,A*3D
+        # T = Direction in degrees - 0° north, 90° east, 180° south, 270° west. Using True degrees (the North Pole)
+        # K = Speed in km/h
+        #
+
+        calculated_checksum = calculate_nmea_checksum(line)
+        if nmea_checksum != calculated_checksum:
+            logger.info(f"NMEA checksum does not match: {nmea_checksum} != {calculated_checksum}")
+            return None
+
+        heading, speed = None, None
+
+        # Read heading
+        if nmea_parts[2] == "T":
+            if nmea_parts[1] != "":
+                heading = float(nmea_parts[1])
+
+        # Read speed
+        if nmea_parts[8] == "K":
+            if nmea_parts[7] != "":
+                speed = float(nmea_parts[7])
+
+        return (heading, speed)
+
+    else:
+        # Non-position message OR invalid string
+        # print(f"Ignoring line {line}")
+        pass
+    return None
+
 
 
 def parse_nmea_checksum(nmea_line):

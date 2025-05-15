@@ -456,3 +456,111 @@ class PID_Pilot(object):
             throttle = throttles[closest_pt_idx] * self.variable_speed_multiplier
         logging.info(f"CTE: {cte} steer: {steer} throttle: {throttle}")
         return steer, throttle
+
+
+class SinglePointDirection(object):
+    def __init__(self) -> None:
+        self.point = []
+        self.direction = 0.0
+
+
+    def run(self, x, y, dest):
+        if len(dest) == 0:
+            logging.error("Destination coordinates are missing")
+            return None, None
+
+        if x == 0.0 or y == 0.0:
+            logging.error("Own coordinates are missing")
+            return None
+
+        # Calculates the ideal direction from the current x, y to destination x, y
+        own_coords = (x, y)
+
+        vect_x = dest[0] - own_coords[0]
+        vect_y = dest[1] - own_coords[1]
+
+        angle_radian = math.atan2(vect_x, vect_y)
+        angle_degrees = math.degrees(angle_radian)
+
+        distance = math.sqrt(vect_x * vect_x + vect_y * vect_y)
+
+        return angle_degrees, distance
+
+
+class SinglePointPilot(object):
+    def __init__(self, pid: PIDController, dest_circle=5.0, throttle=0.8):
+        self.pid = pid
+        self.dest_circle = dest_circle
+        self.throttle = throttle
+
+    def run(self, ideal_direction, distance, curr_heading, mode):
+        if curr_heading is None:
+            logging.error("Current heading is missing")
+            return None, None
+
+        if ideal_direction is None:
+            logging.error("Destination direction is missing")
+            return None, None
+
+        error = (ideal_direction - curr_heading + 180) % 360 - 180 # Error from target direction
+
+        steer = self.pid.run(error)
+        steer = max(-1, min(1, steer)) # Limit steer to [-1, 1]
+        throttle = self.throttle
+
+        if distance < self.dest_circle:
+            logging.info("Reached destination point")
+            throttle = 0
+        elif mode == 'local_angle':
+            throttle = 0
+        return steer, throttle
+
+class LidarCorrection(object):
+    def __init__(self, bicycle, max_steering_degree=20, min_lookahead=1.0):
+        self.max_steering_degree = max_steering_degree
+        self.bicycle = bicycle
+
+        self.min_lookahead = min_lookahead
+
+
+    def run(self, curr_steer, curr_throttle, lidar_scan, curr_speed):
+        if curr_steer is None or curr_throttle is None:
+            return None, None
+
+        if lidar_scan is None or len(lidar_scan) == 0:
+            logging.warning("Lidar data is missing")
+            return curr_steer, curr_throttle
+
+        current_steering_angle = self.max_steering_degree * curr_steer
+        curr_speed = curr_speed * 0.277778 # convert to m/s
+
+        resulting_steer = curr_steer
+
+        curr_speed = max(curr_speed, self.min_lookahead) # for low speeds, increase the future movement calculation distance
+        multiplier = 1 - 0.4 * abs(curr_steer)
+        calc_speed = curr_speed * multiplier # for high steering angles, calculate the future movenent with a lower speed value
+
+        distance_after_1s_from_start, angle_deg_after_1s_from_start = self.bicycle.run(curr_steer, calc_speed)
+
+        if lidar_scan[int(angle_deg_after_1s_from_start)] is None or lidar_scan[int(angle_deg_after_1s_from_start)] < distance_after_1s_from_start:
+            # if the distance is too short, we need to steer away from it
+            best_deviation = float("inf")
+            for angle in range(-self.max_steering_degree, self.max_steering_degree + 1):
+                normalized_steer = angle / self.max_steering_degree
+                calc_speed = curr_speed * (1 - 0.4 * abs(normalized_steer))
+                alt_distance, alt_angle = self.bicycle.run(normalized_steer, calc_speed)
+
+                if lidar_scan[int(alt_angle)] is not None and lidar_scan[int(alt_angle)] > alt_distance:
+                    deviation = (alt_angle - angle_deg_after_1s_from_start + 180) % 360 - 180
+                    if abs(deviation) < best_deviation:
+                        best_deviation = abs(angle - current_steering_angle)
+                        resulting_steer = normalized_steer
+
+            # No available movement in any direction (based on the calculated future movement)
+            if best_deviation == float("inf") or lidar_scan[0] < 400: # less than 40 cm free space in front: stop the car
+                logging.info("Stopping the car!! Remove obstacle in front")
+                return 0, 0
+
+        resulting_steer = max(-1, min(1, resulting_steer))
+
+        return resulting_steer, curr_throttle

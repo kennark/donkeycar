@@ -675,3 +675,48 @@ class TwoWheelSteeringThrottle:
  
     def shutdown(self):
         pass
+
+
+class SimpleBicycle:
+    """
+        Estimates the location of the car from starting point based on speed and steering angle.
+        Point of reference: the rear wheels
+    """
+
+    def __init__(self, wheelbase, max_steering_angle):
+        self.wheelbase = wheelbase
+        self.angle_converter = UnnormalizeSteeringAngle(math.radians(max_steering_angle))
+
+    def run(self, steering_value, speed, time=1.0):
+        """
+            Returns distance and angle from starting point after @time seconds of travel.
+            Angle is in degrees, where 0 is in the current direction of travel
+            Distance is in millimeters
+
+        """
+
+        if abs(steering_value) < 0.01:
+            distance = speed * time * 1000
+            return distance, 0
+
+        if speed == 0:
+            return 0, 0
+
+        else:
+
+            steering_value = -steering_value # invert steering value so positive angles are for turning right
+
+            alpha = self.angle_converter.run(steering_value)
+
+            radius = self.wheelbase / math.tan(alpha)
+            beta = speed * time / radius
+
+            x = math.sin(beta) * radius
+            y = radius * (1 - math.cos(beta))
+
+        # Calculate the angle of the vector from the origin to the point (x, y)
+        vector_angle = (math.degrees(math.atan2(y, x)) + 360 ) % 360
+
+        distance = math.hypot(x, y) * 1000
+
+        return distance, vector_angle

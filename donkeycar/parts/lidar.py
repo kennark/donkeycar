@@ -168,7 +168,7 @@ class RPLidar2(object):
                     if distance >= self.min_distance and distance <= self.max_distance:
                         #
                         # A measurement is a tuple of
-                        #    (angle, distance, time, scan, index).
+                        #    (distance, angle, time, scan, index).
                         #
                         # distance = distance in millimeters as a float;
                         #            zero indicates invalid measurement
@@ -768,6 +768,145 @@ class MapToImage(object):
 
     def shutdown(self):
         pass
+
+class ScanFilter(object):
+    """
+        Filters out valid lidar scans made in the last [time_window] seconds.
+        Smooths the measurements by spreading the nearest distance over a range of [spread] degrees.
+    """
+
+    def __init__(self, min_angle, max_angle, measurement_spread=5, time_window=1.0):
+        self.min_angle = min_angle
+        self.max_angle = max_angle
+        self.time_window = time_window
+        self.spread = measurement_spread
+
+    def run(self, measurements):
+        if measurements == None:
+            return {}
+        if len(measurements) == 0:
+            return {}
+
+        # A measurement is a tuple of
+        #    (distance, angle, time, scan, index).
+
+        now = time.time()
+        valid_measurements = []
+        # read through the lidar measurements one by one
+        for measurement in measurements:
+            if measurement[2] > now - self.time_window:
+                valid_measurements.append(measurement)
+
+        if len(valid_measurements) == 0:
+            return {}
+
+        if self.min_angle > self.max_angle:
+            smoothed = {angle: float('inf') for angle in range(self.min_angle, 361)}
+            smoothed.update({angle: float('inf') for angle in range(0, self.max_angle + 1)})
+        else:
+            smoothed = {angle: float('inf') for angle in range(self.min_angle, self.max_angle + 1)}
+
+        for distance, angle, _, _, _ in measurements:
+            angle = int(angle)
+            for offset in range(-self.spread, self.spread + 1):
+                a = angle + offset
+                if a in smoothed:
+                    smoothed[a] = min(smoothed[a], distance)
+
+        return smoothed
+
+
+class LidarValidator(object):
+    """
+        Validates that Lidar scan values stay within the required percentage parameters given by the manufacturer.
+    """
+    def __init__(self, tolerances):
+        self.tolerances = tolerances
+        self.previous_scan = None
+        self.variances = {angle: [0, float('inf'), -float('inf')] for angle in range(361)}
+        self.timestamp = None
+
+    def run(self, filtered_measurements):
+        if filtered_measurements is None:
+            return
+
+        if len(filtered_measurements) == 0:
+            return
+
+        if self.previous_scan is None:
+            self.previous_scan = filtered_measurements
+            self.timestamp = time.time()
+            return
+
+        for angle, distance in filtered_measurements.items():
+            if not math.isfinite(distance):
+                self.variances.get(angle)[0] += 1
+                continue
+            if self.previous_scan[angle] == float('inf'): # skip invalid scans
+                continue
+
+            if self.variances[angle][1] > distance:
+                self.variances[angle][1] = distance
+            if self.variances[angle][2] < distance:
+                self.variances[angle][2] = distance
+
+
+            if time.time() - self.timestamp > 120:
+                for key, value in self.variances.items():
+                    print(key, ',', value[0], ',', value[1], ',', value[2])
+
+                print()
+
+        self.previous_scan = filtered_measurements
+
+        #logging.info("Infinite values at angles: " + str(inf_values))
+        #logging.info("Failed tolerances at angles (given difference is): " + str(failed_tolerances))
+
+class LidarVisualizer(object):
+    """
+        Prints the lidar scan to console as a bar graph
+    """
+
+    def __init__(self, max_distance=3000, max_height=30, resolution=10):
+        self.max_height = max_height
+        self.max_distance = max_distance
+        self.resolution = resolution
+
+    def run(self, filtered_measurements):
+        if filtered_measurements == None:
+            return
+
+        if len(filtered_measurements) == 0:
+            return
+
+        bar_heights = {
+            angle: int(min((distance / self.max_distance), 1) * self.max_height)
+            for angle, distance in filtered_measurements.items()
+        }
+
+        # Build rows from top to bottom
+        rows = []
+        for row in reversed(range(1, self.max_height + 1)):
+            line = ""
+            for angle in filtered_measurements:
+                if angle % self.resolution != 0:
+                    continue
+                if bar_heights[angle] >= row:
+                    line += " █ "
+                else:
+                    line += "   "
+            rows.append(line)
+
+        # Add angle labels
+        label_line = ""
+        for angle in filtered_measurements:
+            if angle % self.resolution != 0:
+                continue
+            label_line += f"{angle:>3}"
+
+        print("\n".join(rows + [label_line]))
+
+
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import json
 import logging
 import time
 import asyncio
+import utm
 
 import requests
 from tornado.ioloop import IOLoop
@@ -117,6 +118,7 @@ class LocalWebController(tornado.web.Application):
         self.recording = False
         self.recording_latch = None
         self.buttons = {}  # latched button values for processing
+        self.destination = []
 
         self.port = port
 
@@ -133,6 +135,7 @@ class LocalWebController(tornado.web.Application):
             (r"/calibrate", CalibrateHandler),
             (r"/video", VideoAPI),
             (r"/wsTest", WsTest),
+            (r"/dest", SetDestination),
 
             (r"/static/(.*)", StaticFileHandler,
              {"path": self.static_file_path}),
@@ -211,7 +214,7 @@ class LocalWebController(tornado.web.Application):
             logger.debug(str(changes))
             self.loop.add_callback(lambda: self.update_wsclients(changes))
 
-        return self.angle, self.throttle, self.mode, self.recording, buttons
+        return self.angle, self.throttle, self.mode, self.recording, buttons, self.destination
 
     def run(self, img_arr=None, num_records=0, mode=None, recording=None):
         return self.run_threaded(img_arr, num_records, mode, recording)
@@ -442,3 +445,26 @@ class WebFpv(Application):
         pass
 
 
+class SetDestination(RequestHandler):
+    def post(self):
+        data = tornado.escape.json_decode(self.request.body)
+
+        if data.get('lat') is None or data.get('lat') == "":
+            logger.error("Missing latitude")
+            self.set_status(400)
+            self.write({"error":"Missing latitude"})
+        elif data.get('lon') is None or data.get('lon') == "":
+            logger.error("Missing longitude")
+            self.set_status(400)
+            self.write({"error":"Missing longitude"})
+        else:
+            try:
+                lat = float(data['lat'])
+                lon = float(data['lon'])
+            except:
+                self.set_status(400)
+                self.write({"error":"Coordinates are not numbers"})
+                return
+            utm_position = utm.from_latlon(lat, lon)
+            self.application.destination = [utm_position[0], utm_position[1]]
+            logger.info(f"Set destination {lat} , {lon}")
